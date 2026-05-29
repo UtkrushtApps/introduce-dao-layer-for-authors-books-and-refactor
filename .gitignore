@@ -1,0 +1,44 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.env/
+.venv/
+ENV/
+
+# SQLite database files
+*.db
+*.sqlite3
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
