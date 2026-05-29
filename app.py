@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from flask import Flask, jsonify, request
 
+from dao import AuthorDAO, BookDAO
 from db import close_connection, get_connection, init_db
 from models import Author, Book
 from utils import (
@@ -36,11 +37,8 @@ def list_authors() -> Any:
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, name, biography, created_at FROM authors ORDER BY name ASC"
-        )
-        rows = cursor.fetchall()
+        author_dao = AuthorDAO(conn)
+        rows = author_dao.get_all()
         authors: List[Dict[str, Any]] = [format_author_record(row) for row in rows]
         return jsonify({"authors": authors})
     except sqlite3.Error:
@@ -54,12 +52,8 @@ def get_author(author_id: int) -> Any:
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, name, biography, created_at FROM authors WHERE id = ?",
-            (author_id,),
-        )
-        row = cursor.fetchone()
+        author_dao = AuthorDAO(conn)
+        row = author_dao.get_by_id(author_id)
         if row is None:
             return jsonify({"error": "Author not found"}), 404
 
@@ -85,23 +79,31 @@ def create_author() -> Any:
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO authors (name, biography) VALUES (?, ?)",
-            (validated.get("name"), validated.get("biography")),
-        )
-        conn.commit()
-
-        author_id = cursor.lastrowid
-        cursor.execute(
-            "SELECT id, name, biography, created_at FROM authors WHERE id = ?",
-            (author_id,),
-        )
-        row = cursor.fetchone()
+        author_dao = AuthorDAO(conn)
+        row = author_dao.create(validated)
         author = format_author_record(row)
         return jsonify(author), 201
     except sqlite3.Error:
         return jsonify({"error": "Database error while creating author"}), 500
+    finally:
+        close_connection(conn)
+
+
+@app.route("/authors/<int:author_id>", methods=["DELETE"])
+def delete_author(author_id: int) -> Any:
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        conn = get_connection()
+        author_dao = AuthorDAO(conn)
+
+        row = author_dao.get_by_id(author_id)
+        if row is None:
+            return jsonify({"error": "Author not found"}), 404
+
+        author_dao.delete(author_id)
+        return jsonify({"status": "deleted"}), 200
+    except sqlite3.Error:
+        return jsonify({"error": "Database error while deleting author"}), 500
     finally:
         close_connection(conn)
 
@@ -114,32 +116,11 @@ def list_books() -> Any:
     author_id = request.args.get("author_id")
     query = request.args.get("q")
 
-    sql = (
-        "SELECT id, title, author_id, isbn, quantity, price, created_at "
-        "FROM books "
-    )
-    conditions: List[str] = []
-    params: List[Any] = []
-
-    if author_id is not None:
-        conditions.append("author_id = ?")
-        params.append(author_id)
-
-    if query:
-        conditions.append("LOWER(title) LIKE ?")
-        params.append(f"%{query.lower()}%")
-
-    if conditions:
-        sql += "WHERE " + " AND ".join(conditions) + " "
-
-    sql += "ORDER BY created_at DESC, id DESC"
-
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
+        book_dao = BookDAO(conn)
+        rows = book_dao.get_all(author_id=author_id, query=query)
         books: List[Dict[str, Any]] = [format_book_record(row) for row in rows]
         return jsonify({"books": books})
     except sqlite3.Error:
@@ -153,13 +134,8 @@ def get_book(book_id: int) -> Any:
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, title, author_id, isbn, quantity, price, created_at "
-            "FROM books WHERE id = ?",
-            (book_id,),
-        )
-        row = cursor.fetchone()
+        book_dao = BookDAO(conn)
+        row = book_dao.get_by_id(book_id)
         if row is None:
             return jsonify({"error": "Book not found"}), 404
 
@@ -169,12 +145,6 @@ def get_book(book_id: int) -> Any:
         return jsonify({"error": "Database error while fetching book"}), 500
     finally:
         close_connection(conn)
-
-
-def _author_exists(conn: sqlite3.Connection, author_id: int) -> bool:
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM authors WHERE id = ?", (author_id,))
-    return cursor.fetchone() is not None
 
 
 @app.route("/books", methods=["POST"])
@@ -191,32 +161,12 @@ def create_book() -> Any:
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = get_connection()
-        if not _author_exists(conn, validated["author_id"]):
+        author_dao = AuthorDAO(conn)
+        if author_dao.get_by_id(validated["author_id"]) is None:
             return jsonify({"error": "Author does not exist"}), 400
 
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO books (title, author_id, isbn, quantity, price)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                validated.get("title"),
-                validated.get("author_id"),
-                validated.get("isbn"),
-                validated.get("quantity", 0),
-                validated.get("price", 0.0),
-            ),
-        )
-        conn.commit()
-
-        book_id = cursor.lastrowid
-        cursor.execute(
-            "SELECT id, title, author_id, isbn, quantity, price, created_at "
-            "FROM books WHERE id = ?",
-            (book_id,),
-        )
-        row = cursor.fetchone()
+        book_dao = BookDAO(conn)
+        row = book_dao.create(validated)
         book = format_book_record(row)
         return jsonify(book), 201
     except sqlite3.Error:
@@ -239,43 +189,18 @@ def update_book(book_id: int) -> Any:
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-
-        # Ensure book exists
-        cursor.execute("SELECT id FROM books WHERE id = ?", (book_id,))
-        if cursor.fetchone() is None:
+        book_dao = BookDAO(conn)
+        existing = book_dao.get_by_id(book_id)
+        if existing is None:
             return jsonify({"error": "Book not found"}), 404
 
-        # If author_id is being updated, ensure the new author exists
         if "author_id" in validated:
-            if not _author_exists(conn, validated["author_id"]):
+            author_dao = AuthorDAO(conn)
+            if author_dao.get_by_id(validated["author_id"]) is None:
                 return jsonify({"error": "Author does not exist"}), 400
 
-        # Dynamically build the UPDATE statement based on validated keys
-        set_clauses: List[str] = []
-        params: List[Any] = []
-        for field in ("title", "author_id", "isbn", "quantity", "price"):
-            if field in validated:
-                set_clauses.append(f"{field} = ?")
-                params.append(validated[field])
-
-        if not set_clauses:
-            return jsonify({"error": "No valid fields provided for update"}), 400
-
-        params.append(book_id)
-
-        sql = f"UPDATE books SET {', '.join(set_clauses)} WHERE id = ?"
-        cursor.execute(sql, params)
-        conn.commit()
-
-        cursor.execute(
-            "SELECT id, title, author_id, isbn, quantity, price, created_at "
-            "FROM books WHERE id = ?",
-            (book_id,),
-        )
-        row = cursor.fetchone()
-        book = format_book_record(row)
-        return jsonify(book)
+        updated_book = book_dao.update(book_id, validated)
+        return jsonify(updated_book)
     except sqlite3.Error:
         return jsonify({"error": "Database error while updating book"}), 500
     finally:
@@ -287,14 +212,13 @@ def delete_book(book_id: int) -> Any:
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = get_connection()
-        cursor = conn.cursor()
+        book_dao = BookDAO(conn)
 
-        cursor.execute("SELECT id FROM books WHERE id = ?", (book_id,))
-        if cursor.fetchone() is None:
+        existing = book_dao.get_by_id(book_id)
+        if existing is None:
             return jsonify({"error": "Book not found"}), 404
 
-        cursor.execute("DELETE FROM books WHERE id = ?", (book_id,))
-        conn.commit()
+        book_dao.delete(book_id)
         return jsonify({"status": "deleted"}), 200
     except sqlite3.Error:
         return jsonify({"error": "Database error while deleting book"}), 500
